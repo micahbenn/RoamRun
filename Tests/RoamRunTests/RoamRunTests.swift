@@ -682,6 +682,32 @@ import ServiceManagement
     #expect(decoded.keys.contains(id) && decoded.count == 1)
 }
 
+@Test(arguments: ["null", "42", "true", #""broken""#, "[]", "{}"])
+func statusFileSkipsMalformedValues(bad: String) throws {
+    let first = UUID(), last = UUID()
+    let good = entry(pid: 100, .ready)
+    let object = String(decoding: try JSONEncoder().encode(good), as: UTF8.self)
+    let data = Data("[\"\(first)\",\(object),\"\(UUID())\",\(bad),\"\(last)\",\(object)]".utf8)
+    #expect(StatusFile.decode(data) == [first: good, last: good])
+}
+
+@Test(arguments: ["null", "42", "true", #""broken""#, "[]", "{}"])
+func profileStoreSalvagesMalformedValuesAndKeepsOriginal(bad: String) throws {
+    let dir = scratchDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let first = profile("iPhone"), last = profile("iPad")
+    let encode = { (p: DeviceProfile) in String(decoding: try JSONEncoder().encode(p), as: UTF8.self) }
+    let data = Data("[\(try encode(first)),\(bad),\(try encode(last))]".utf8)
+    let file = dir.appendingPathComponent("profiles.json")
+    try data.write(to: file)
+    let store = ProfileStore(directory: dir)
+
+    #expect(store.load() == [first, last])
+    let backup = try #require(store.keptUnreadable)
+    #expect(try Data(contentsOf: backup) == data)
+    #expect(try Data(contentsOf: file) == data)
+}
+
 @Test func oneOfTwoWatchersStepsBack() {
     let cli = StatusFile.Entry(pid: 200, cli: true, udid: nil, status: "On this Wi\u{2011}Fi", detail: "", ready: false, tunnelPorts: [], updated: .now)
     var app = cli; app.cli = false

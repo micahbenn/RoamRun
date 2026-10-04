@@ -43,8 +43,9 @@ final class ProfileStore {
         }
         if let profiles = try? JSONDecoder().decode([DeviceProfile].self, from: data) { return profiles }
         // One malformed entry shouldn't cost the others: keep what decodes (and a copy of the file below).
-        let salvaged = ((try? JSONSerialization.jsonObject(with: data)) as? [Any])?.compactMap { item in
-            (try? JSONSerialization.data(withJSONObject: item)).flatMap { try? JSONDecoder().decode(DeviceProfile.self, from: $0) }
+        let salvaged = ((try? JSONSerialization.jsonObject(with: data)) as? [Any])?.compactMap { item -> DeviceProfile? in
+            guard let object = item as? [String: Any] else { return nil }
+            return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? JSONDecoder().decode(DeviceProfile.self, from: $0) }
         }
         // The next save would replace it with an empty list: keep a copy, once per distinct content.
         let fm = FileManager.default

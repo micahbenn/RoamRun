@@ -2623,6 +2623,69 @@ func aNewAddressAndPortAreFoundTogether(scanFinds: Bool) async {
     #expect(back.deviceNetwork == .cellular)
 }
 
+@MainActor @Test(arguments: ["tailscale", "manual"])
+func doctorKeepsAReadyCellularTunnelHealthy(provider: String) async {
+    var p = profile("iPhone"); p.providerID = provider
+    var e = entry(pid: 100, .ready); e.network = "cellular"
+    let checks = await CLI.remotePairingChecks(p, entry: e,
+        probe: { _, _ in Issue.record("A ready cellular tunnel must not probe RemotePairing"); return false },
+        handshake: { _, _ in Issue.record("A ready cellular tunnel must not handshake"); return false },
+        ping: { _ in Issue.record("A ready cellular tunnel must not ping"); return false })
+    #expect(checks.count == 1 && checks.first?.result == "skipped")
+    #expect(checks.first?.scope == p.displayName && checks.first?.fix == nil)
+}
+
+@MainActor @Test(arguments: ["wifi", "cellular", "unknown", "missing", "off"])
+func doctorStillChecksRemotePairingWithoutAReadyCellularTunnel(network: String) async {
+    let p = profile("iPhone")
+    var e = entry(pid: 100, network == "cellular" ? .waiting : .ready)
+    e.network = network == "missing" ? nil : network
+    var probes = 0
+    let checks = await CLI.remotePairingChecks(p, entry: network == "off" ? nil : e,
+        probe: { host, port in
+            #expect(host == p.providerIP && port == p.remotePairingPort)
+            probes += 1; return false
+        },
+        handshake: { _, _ in Issue.record("A closed port must not handshake"); return false },
+        ping: { _ in false })
+    #expect(probes == 1 && checks.first?.result == "fail")
+}
+
+@MainActor @Test(arguments: [true, false])
+func doctorChecksTheHandshakeOnAnOpenPort(speaks: Bool) async {
+    let p = profile("iPhone")
+    var handshakes = 0
+    let checks = await CLI.remotePairingChecks(p, entry: entry(pid: 100, .ready),
+        probe: { _, _ in true },
+        handshake: { _, _ in handshakes += 1; return speaks },
+        ping: { _ in Issue.record("An open port must not ping"); return false })
+    #expect(handshakes == 1 && checks.count == 2)
+    #expect(checks.first?.result == "ok")
+    #expect(checks.last?.result == (speaks ? "ok" : "fail"))
+}
+
+@MainActor @Test(arguments: ["tailscale", "manual"])
+func doctorGivesAdviceForTheDevicesVPN(provider: String) async throws {
+    var p = profile("iPhone"); p.providerID = provider
+    var pings = 0
+    let checks = await CLI.remotePairingChecks(p, entry: nil,
+        probe: { _, _ in false }, handshake: { _, _ in false },
+        ping: { _ in pings += 1; return false })
+    let fix = try #require(checks.first?.fix)
+    #expect(checks.first?.result == "fail")
+    #expect(pings == (provider == "tailscale" ? 1 : 0))
+    #expect(fix.contains("Tailscale") == (provider == "tailscale"))
+    if provider == "manual" { #expect(fix.contains("mesh VPN") && fix.contains("Wi-Fi")) }
+}
+
+@MainActor @Test func doctorDistinguishesATailscalePongFromAnOpenPairingPort() async {
+    let checks = await CLI.remotePairingChecks(profile("iPhone"), entry: nil,
+        probe: { _, _ in false }, handshake: { _, _ in false }, ping: { _ in true })
+    #expect(checks.first?.result == "fail")
+    #expect(checks.first?.message.contains("Tailscale reaches the device") == true)
+    #expect(checks.first?.fix?.contains("Tailscale app") == true)
+}
+
 // MARK: - P3s from the bug-hunt review
 
 @Test func unknownValuesInJSONAreNullNotMissing() throws {

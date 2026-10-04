@@ -174,6 +174,9 @@ already-running app, and never exits on its own — run it in the background:
 
 - Run `roamrun doctor iPhone --json`; act on the first `"result": "fail"`. Its
   `fix` says what to do — if it involves the iPhone, ask the user.
+- While the bridge is ready over cellular, `doctor` skips RemotePairing checks:
+  that port needs Wi-Fi, but the existing tunnel can keep working. Bridge,
+  CoreDevice and lock checks still run. Devices entered by IP get mesh-VPN advice.
 - `ready: false` with a note that the iPhone is probably asleep, xcodebuild
   listing only simulators, or CoreDevice error 4016 → ask the user to unlock.
 - `doctor` says Tailscale reaches the iPhone but the RemotePairing port doesn't

@@ -1137,6 +1137,41 @@ enum CLI {
         }
     }
 
+    /// RemotePairing is Wi-Fi only; a ready cellular tunnel does not need it.
+    static func remotePairingChecks(_ profile: DeviceProfile, entry: StatusFile.Entry?,
+                                   probe: (String, UInt16) async -> Bool = {
+                                       await ReachabilityProbe.checkTCP(host: $0, port: $1, timeout: 4)
+                                   },
+                                   handshake: (String, UInt16) async -> Bool = {
+                                       await ReachabilityProbe.speaksRemotePairing(host: $0, port: $1)
+                                   },
+                                   ping: (String) -> Bool) async -> [Check] {
+        let scope = profile.displayName
+        if let entry, entry.ready, entry.kind == .ready, entry.deviceNetwork == .cellular {
+            return [Check(scope: scope, result: "skipped",
+                          message: "RemotePairing checks skipped — the existing tunnel is ready over cellular", fix: nil)]
+        }
+        let port = profile.remotePairingPort
+        let tailscale = profile.providerID == MeshProvider.tailscale.rawValue
+        guard await probe(profile.providerIP, port) else {
+            if tailscale, ping(profile.providerIP) {
+                return [Check(scope: scope, result: "fail",
+                              message: "Tailscale reaches the device, but RemotePairing port \(port) does not answer",
+                              fix: "Ask the user to (1) toggle the VPN off and on in the device's Tailscale app — iOS Tailscale can show \"MagicSock function ReceiveIPv4 is not running\" and stop passing data while still looking connected; (2) check the device is on Wi-Fi (cellular alone is not enough). If it restarted, run Find RemotePairing Port in the app.")]
+            }
+            let fix = tailscale
+                ? "Ask the user to unlock the device, keep the screen on and make sure Tailscale is on. If the Tailscale app shows a \"MagicSock … not running\" warning, toggle its VPN off and on."
+                : "Ask the user to unlock the device, keep the screen on, join Wi-Fi and make sure its mesh VPN is connected. Check that the VPN routes traffic between this Mac and the device. If the device restarted, run Find RemotePairing Port in the app."
+            return [Check(scope: scope, result: "fail",
+                          message: "The device does not answer over \(tailscale ? "Tailscale" : "the VPN")", fix: fix)]
+        }
+        let speaks = await handshake(profile.providerIP, port)
+        return [Check(scope: scope, result: "ok", message: "RemotePairing port \(port) is reachable", fix: nil),
+                Check(scope: scope, result: speaks ? "ok" : "fail",
+                      message: "Device \(speaks ? "answers" : "does not answer") the RemotePairing handshake",
+                      fix: speaks ? nil : "Another service holds this port. Run Find RemotePairing Port in the app.")]
+    }
+
     /// Unless checkAll, devices whose bridge is off are skipped: an unused device
     /// isn't a problem to report.
     private static func doctor(_ profiles: [DeviceProfile], json: Bool, checkAll: Bool) async -> Bool {
@@ -1226,22 +1261,9 @@ enum CLI {
                 } else {
                     note("VPN address entered by hand — Tailscale checks skipped")
                 }
-                let open = await ReachabilityProbe.checkTCP(host: p.providerIP, port: p.remotePairingPort, timeout: 4)
-                if open {
-                    check(true, "RemotePairing port \(p.remotePairingPort) is reachable")
-                } else if viaTailscale(p), cli.ping(p.providerIP) {
-                    // Tailscale answers but the iPhone's service doesn't: the iOS
-                    // Tailscale data plane is stuck, or the iPhone left Wi-Fi.
-                    check(false, "Tailscale reaches the device, but RemotePairing port \(p.remotePairingPort) does not answer",
-                          fix: "Ask the user to (1) toggle the VPN off and on in the device's Tailscale app — iOS Tailscale can show \"MagicSock function ReceiveIPv4 is not running\" and stop passing data while still looking connected; (2) check the device is on Wi-Fi (cellular alone is not enough). If it restarted, run Find RemotePairing Port in the app.")
-                } else {
-                    check(false, "The device does not answer over \(viaTailscale(p) ? "Tailscale" : "the VPN")",
-                          fix: "Ask the user to unlock the device, keep the screen on and make sure Tailscale is on. If the Tailscale app shows a \"MagicSock … not running\" warning, toggle its VPN off and on.")
-                }
-                if open {
-                    let speaks = await ReachabilityProbe.speaksRemotePairing(host: p.providerIP, port: p.remotePairingPort)
-                    check(speaks, "Device \(speaks ? "answers" : "does not answer") the RemotePairing handshake",
-                          fix: "Another service holds this port. Run Find RemotePairing Port in the app.")
+                for result in await remotePairingChecks(p, entry: live[p.id], ping: { cli.ping($0) }) {
+                    if result.result == "skipped" { note(result.message) }
+                    else { check(result.result == "ok", result.message, fix: result.fix ?? "") }
                 }
             }
             // How remotepairingd last resolved our record (nil = pairing lost), or any
